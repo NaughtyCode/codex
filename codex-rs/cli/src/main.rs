@@ -821,7 +821,28 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+fn load_coding_api_config() {
+    let path = r"E:\AI\setting\codex_config.json";
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return,
+    };
+    let map: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_str(&content) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return,
+        };
+    for (key, value) in map {
+        if let Some(val) = value.as_str() {
+            std::env::set_var(&key, val);
+        } else {
+            std::env::set_var(&key, value.to_string());
+        }
+    }
+}
+
 async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+    load_coding_api_config();
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,

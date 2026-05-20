@@ -55,9 +55,9 @@ pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer
 #[serde(rename_all = "lowercase")]
 pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
-    #[default]
     Responses,
     /// The Chat Completions API at `POST /v1/chat/completions`.
+    #[default]
     ChatCompletions,
 }
 
