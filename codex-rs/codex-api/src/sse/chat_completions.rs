@@ -181,8 +181,15 @@ async fn process_chat_completions_sse(
                 return;
             }
             Ok(None) => {
-                // Stream ended — emit completed
-                emit_completed(&acc, &tx_event, response_id.as_deref()).await;
+                // Stream ended — flush remaining state, then emit completed
+                flush_remaining_state(&mut acc, &tx_event).await;
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::Completed {
+                        response_id: response_id.clone().unwrap_or_default(),
+                        token_usage: None,
+                        end_turn: Some(true),
+                    }))
+                    .await;
                 return;
             }
             Err(_) => {
@@ -197,7 +204,8 @@ async fn process_chat_completions_sse(
 
         // [DONE] marker
         if sse.data.trim() == "[DONE]" {
-            emit_completed(&acc, &tx_event, response_id.as_deref()).await;
+            flush_remaining_state(&mut acc, &tx_event).await;
+            emit_completed(response_id.as_deref(), &tx_event).await;
             return;
         }
 
@@ -278,16 +286,19 @@ async fn process_chat_completions_sse(
                                 }
                                 if let Some(ref args) = func.arguments {
                                     tc_acc.arguments.push_str(args);
-                                    if tx_event
-                                        .send(Ok(ResponseEvent::ToolCallInputDelta {
-                                            item_id: tc_acc.id.clone(),
-                                            call_id: Some(tc_acc.id.clone()),
-                                            delta: args.clone(),
-                                        }))
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
+                                    // Only emit delta once the tool call has an id
+                                    if !tc_acc.id.is_empty() {
+                                        if tx_event
+                                            .send(Ok(ResponseEvent::ToolCallInputDelta {
+                                                item_id: tc_acc.id.clone(),
+                                                call_id: Some(tc_acc.id.clone()),
+                                                delta: args.clone(),
+                                            }))
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
                                     }
                                 }
                             }
@@ -328,8 +339,9 @@ async fn process_chat_completions_sse(
             }
         }
 
-        // 5. Usage in chunk indicates terminal
+        // 5. Usage in chunk indicates terminal — flush any pending state first
         if let Some(usage) = chunk.usage {
+            flush_remaining_state(&mut acc, &tx_event).await;
             let c_usage = TokenUsage {
                 input_tokens: usage.prompt_tokens.unwrap_or(0),
                 cached_input_tokens: 0,
@@ -357,7 +369,7 @@ async fn process_chat_completions_sse(
 // ── Helpers ──────────────────────────────────────────────────────────
 
 async fn emit_accumulated_text(
-    choice_acc: &DeltaAccumulator,
+    choice_acc: &mut DeltaAccumulator,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
     if !choice_acc.content.is_empty() {
@@ -365,7 +377,7 @@ async fn emit_accumulated_text(
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
-                text: choice_acc.content.clone(),
+                text: std::mem::take(&mut choice_acc.content),
             }],
             phase: Some(MessagePhase::FinalAnswer),
         };
@@ -374,10 +386,11 @@ async fn emit_accumulated_text(
 }
 
 async fn emit_tool_call_output_items(
-    choice_acc: &DeltaAccumulator,
+    choice_acc: &mut DeltaAccumulator,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
-    for tc_acc in choice_acc.tool_calls.values() {
+    let tool_calls = std::mem::take(&mut choice_acc.tool_calls);
+    for tc_acc in tool_calls.values() {
         if !tc_acc.id.is_empty() && !tc_acc.name.is_empty() {
             let item = ResponseItem::FunctionCall {
                 id: None,
@@ -391,10 +404,23 @@ async fn emit_tool_call_output_items(
     }
 }
 
-async fn emit_completed(
-    _acc: &ChatChunkAccumulator,
+async fn flush_remaining_state(
+    acc: &mut ChatChunkAccumulator,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) {
+    for choice_acc in acc.choices.values_mut() {
+        if !choice_acc.content.is_empty() {
+            emit_accumulated_text(choice_acc, tx).await;
+        }
+        if !choice_acc.tool_calls.is_empty() {
+            emit_tool_call_output_items(choice_acc, tx).await;
+        }
+    }
+}
+
+async fn emit_completed(
     response_id: Option<&str>,
+    tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
     let _ = tx
         .send(Ok(ResponseEvent::Completed {
@@ -428,7 +454,6 @@ fn categorize_chat_error(code: Option<&str>, message: &str) -> ApiError {
 mod tests {
     use super::*;
     use codex_client::TransportError;
-    use codex_protocol::models::ResponseItem;
     use futures::TryStreamExt;
     use tokio::sync::mpsc;
     use tokio_test::io::Builder as IoBuilder;
@@ -449,7 +474,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(16);
 
         // Emit Created first
-        let _ = tx.send(Ok(ResponseEvent::Created));
+        let _ = tx.send(Ok(ResponseEvent::Created)).await;
         tokio::spawn(process_chat_completions_sse(
             Box::pin(stream),
             tx,
@@ -529,7 +554,7 @@ mod tests {
         let stream = ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
 
-        let _ = tx.send(Ok(ResponseEvent::Created));
+        let _ = tx.send(Ok(ResponseEvent::Created)).await;
         tokio::spawn(process_chat_completions_sse(
             Box::pin(stream),
             tx,

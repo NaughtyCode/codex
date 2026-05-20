@@ -86,6 +86,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -1050,15 +1051,17 @@ impl ModelClientSession {
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
         let session_id = self.client.state.session_id.to_string();
         let thread_id = self.client.state.thread_id.to_string();
+        let mut extra_headers = build_responses_headers(
+            self.client.state.beta_features_header.as_deref(),
+            Some(&self.turn_state),
+            turn_metadata_header.as_ref(),
+        );
+        extra_headers.extend(self.client.build_responses_identity_headers());
         ApiChatCompletionsOptions {
             session_id: Some(session_id),
             thread_id: Some(thread_id),
             session_source: Some(self.client.state.session_source.clone()),
-            extra_headers: build_responses_headers(
-                self.client.state.beta_features_header.as_deref(),
-                Some(&self.turn_state),
-                turn_metadata_header.as_ref(),
-            ),
+            extra_headers,
             compression,
             turn_state: Some(Arc::clone(&self.turn_state)),
         }
@@ -1958,6 +1961,18 @@ fn input_items_to_chat_messages(items: &[ResponseItem]) -> Vec<ChatCompletionMes
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 let content = output.text_content().map(|text| {
                     ChatCompletionContent::Text(text.to_string())
+                }).or_else(|| {
+                    output.content_items().and_then(|items| {
+                        let joined: String = items.iter().filter_map(|ci| match ci {
+                            FunctionCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                            _ => None,
+                        }).collect::<Vec<_>>().join("");
+                        if joined.is_empty() {
+                            None
+                        } else {
+                            Some(ChatCompletionContent::Text(joined))
+                        }
+                    })
                 });
                 messages.push(ChatCompletionMessage {
                     role: ChatCompletionRole::Tool,
