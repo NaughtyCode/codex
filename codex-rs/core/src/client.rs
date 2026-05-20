@@ -1976,7 +1976,7 @@ fn input_items_to_chat_messages(items: &[ResponseItem]) -> Vec<ChatCompletionMes
                 });
                 messages.push(ChatCompletionMessage {
                     role: ChatCompletionRole::Tool,
-                    content,
+                    content: Some(content.unwrap_or(ChatCompletionContent::Text(String::new()))),
                     tool_calls: None,
                     tool_call_id: Some(call_id.clone()),
                 });

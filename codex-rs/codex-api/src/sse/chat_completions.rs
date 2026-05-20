@@ -249,9 +249,8 @@ async fn process_chat_completions_sse(
 
         // Process choices
         if let Some(choices) = &chunk.choices {
-            for (_ci, choice) in choices.iter().enumerate() {
-                let idx = 0i32;
-                let choice_acc = acc.choices.entry(idx).or_default();
+            for choice in choices.iter() {
+                let choice_acc = acc.choices.entry(0).or_default();
 
                 if let Some(delta) = &choice.delta {
                     // 1. Reasoning content (DeepSeek / o1-style)
