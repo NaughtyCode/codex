@@ -309,3 +309,107 @@ impl Stream for ResponseStream {
         self.rx_event.poll_recv(cx)
     }
 }
+
+// ── Chat Completions types ────────────────────────────────────────────
+
+/// Role for a Chat Completions message.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatCompletionRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+/// Content of a Chat Completions message — plain string or multi-part.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum ChatCompletionContent {
+    Text(String),
+    MultiPart(Vec<ChatCompletionContentPart>),
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatCompletionContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ChatCompletionImageUrl },
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionImageUrl {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// A function-call embedded in an assistant message.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: ChatCompletionFunctionCall,
+}
+
+/// A single message in the Chat Completions messages array.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionMessage {
+    pub role: ChatCompletionRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<ChatCompletionContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatCompletionToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "tool_call_id")]
+    pub tool_call_id: Option<String>,
+}
+
+/// A function definition for a Chat Completions tool.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionFunctionDef {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// A tool definition in Chat Completions format.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionToolDef {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ChatCompletionFunctionDef,
+}
+
+/// Full Chat Completions request.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionsRequest {
+    pub model: String,
+    pub messages: Vec<ChatCompletionMessage>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatCompletionToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<ChatCompletionStreamOptions>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionStreamOptions {
+    pub include_usage: bool,
+}

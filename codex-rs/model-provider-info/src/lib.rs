@@ -43,6 +43,10 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+const ANTHROPIC_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
+const ANTHROPIC_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -53,12 +57,15 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// The Chat Completions API at `POST /v1/chat/completions`.
+    ChatCompletions,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
         };
         f.write_str(value)
     }
@@ -72,8 +79,12 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
+            "chat_completions" => Ok(Self::ChatCompletions),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat_completions"],
+            )),
         }
     }
 }
@@ -405,6 +416,44 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
+/// Builds a provider from ANTHROPIC_* environment variables when present.
+pub fn create_anthropic_provider() -> Option<ModelProviderInfo> {
+    let _auth_token = std::env::var(ANTHROPIC_AUTH_TOKEN_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+
+    let base_url = std::env::var(ANTHROPIC_BASE_URL_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| ANTHROPIC_DEFAULT_BASE_URL.to_string());
+
+    let stream_idle_timeout_ms = std::env::var("API_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+
+    Some(ModelProviderInfo {
+        name: "Anthropic-Compatible".into(),
+        base_url: Some(base_url),
+        env_key: Some(ANTHROPIC_AUTH_TOKEN_ENV.to_string()),
+        env_key_instructions: Some(
+            "Set ANTHROPIC_AUTH_TOKEN to your API key.".into(),
+        ),
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::ChatCompletions,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    })
+}
+
 /// Built-in default provider list.
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,
@@ -417,21 +466,26 @@ pub fn built_in_model_providers(
     // providers are bundled with Codex CLI, so we only include the OpenAI and
     // open source ("oss") providers by default. Users are encouraged to add to
     // `model_providers` in config.toml to add their own providers.
-    [
-        (OPENAI_PROVIDER_ID, openai_provider),
-        (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
+    let mut providers: HashMap<String, ModelProviderInfo> = [
+        (OPENAI_PROVIDER_ID.to_string(), openai_provider),
+        (AMAZON_BEDROCK_PROVIDER_ID.to_string(), amazon_bedrock_provider),
         (
-            OLLAMA_OSS_PROVIDER_ID,
+            OLLAMA_OSS_PROVIDER_ID.to_string(),
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
         ),
         (
-            LMSTUDIO_OSS_PROVIDER_ID,
+            LMSTUDIO_OSS_PROVIDER_ID.to_string(),
             create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
         ),
     ]
     .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
+    .collect();
+
+    if let Some(anthropic_provider) = create_anthropic_provider() {
+        providers.insert(ANTHROPIC_PROVIDER_ID.to_string(), anthropic_provider);
+    }
+
+    providers
 }
 
 /// Merge configured providers into the built-in provider catalog.
