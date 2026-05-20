@@ -834,9 +834,9 @@ fn load_coding_api_config() {
         };
     for (key, value) in map {
         if let Some(val) = value.as_str() {
-            std::env::set_var(&key, val);
+            unsafe { std::env::set_var(&key, val); }
         } else {
-            std::env::set_var(&key, value.to_string());
+            unsafe { std::env::set_var(&key, value.to_string()); }
         }
     }
 }
