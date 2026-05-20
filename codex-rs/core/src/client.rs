@@ -787,6 +787,7 @@ impl ModelClient {
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
     ) -> Result<ChatCompletionsRequest> {
         let instructions = &prompt.base_instructions.text;
         let input = prompt.get_formatted_input();
@@ -816,6 +817,7 @@ impl ModelClient {
             parallel_tool_calls: Some(prompt.parallel_tool_calls),
             max_tokens: None,
             temperature: None,
+            reasoning_effort: effort,
             stream_options: Some(ChatCompletionStreamOptions {
                 include_usage: true,
             }),
@@ -1410,6 +1412,7 @@ impl ModelClientSession {
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
         turn_metadata_header: Option<&str>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
@@ -1439,7 +1442,7 @@ impl ModelClientSession {
 
             let request = self
                 .client
-                .build_chat_completions_request(prompt, model_info)?;
+                .build_chat_completions_request(prompt, model_info, effort)?;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
@@ -1789,6 +1792,7 @@ impl ModelClientSession {
                     prompt,
                     model_info,
                     session_telemetry,
+                    effort,
                     turn_metadata_header,
                     inference_trace,
                 )

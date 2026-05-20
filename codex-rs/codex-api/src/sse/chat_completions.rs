@@ -267,8 +267,7 @@ async fn process_chat_completions_sse(
                     // 1. Reasoning content (DeepSeek / o1-style)
                     if let Some(ref reasoning) = delta.reasoning_content {
                         if !choice_acc.content.is_empty() {
-                            // flush accumulated text before reasoning
-                            emit_accumulated_text(choice_acc, &tx_event).await;
+                            emit_accumulated_text(choice_acc, &tx_event, MessagePhase::Commentary).await;
                         }
                         let content_index = 0i64;
                         if tx_event
@@ -336,9 +335,11 @@ async fn process_chat_completions_sse(
                 {
                     match reason.as_str() {
                         "stop" | "length" => {
-                            emit_accumulated_text(choice_acc, &tx_event).await;
+                            emit_accumulated_text(choice_acc, &tx_event, MessagePhase::FinalAnswer).await;
                         }
                         "tool_calls" | "function_call" => {
+                            // Flush any text accumulated before the tool call began
+                            emit_accumulated_text(choice_acc, &tx_event, MessagePhase::Commentary).await;
                             emit_tool_call_output_items(choice_acc, &tx_event).await;
                         }
                         "content_filter" => {
@@ -389,6 +390,7 @@ async fn process_chat_completions_sse(
 async fn emit_accumulated_text(
     choice_acc: &mut DeltaAccumulator,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    phase: MessagePhase,
 ) {
     if !choice_acc.content.is_empty() {
         let item = ResponseItem::Message {
@@ -397,7 +399,7 @@ async fn emit_accumulated_text(
             content: vec![ContentItem::OutputText {
                 text: std::mem::take(&mut choice_acc.content),
             }],
-            phase: Some(MessagePhase::FinalAnswer),
+            phase: Some(phase),
         };
         let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
     }
@@ -428,7 +430,7 @@ async fn flush_remaining_state(
 ) {
     for choice_acc in acc.choices.values_mut() {
         if !choice_acc.content.is_empty() {
-            emit_accumulated_text(choice_acc, tx).await;
+            emit_accumulated_text(choice_acc, tx, MessagePhase::FinalAnswer).await;
         }
         if !choice_acc.tool_calls.is_empty() {
             emit_tool_call_output_items(choice_acc, tx).await;
