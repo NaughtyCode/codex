@@ -80,6 +80,8 @@ pub fn spawn_chat_completions_stream(
 
 #[derive(Debug, Deserialize)]
 struct ChatChunk {
+    #[serde(default)]
+    object: Option<String>,
     id: Option<String>,
     model: Option<String>,
     choices: Option<Vec<ChatChunkChoice>>,
@@ -88,6 +90,7 @@ struct ChatChunk {
 
 #[derive(Debug, Deserialize)]
 struct ChatChunkChoice {
+    index: Option<i32>,
     delta: Option<ChatChunkDelta>,
     #[serde(default)]
     finish_reason: Option<String>,
@@ -120,7 +123,7 @@ struct ChatChunkFunctionDelta {
 struct ChatChunkUsage {
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
-    total_tokens: i64,
+    total_tokens: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +230,13 @@ async fn process_chat_completions_sse(
                 continue;
             }
         };
+        // Guard: ignore non-chunk objects (e.g. `chat.completion` final payloads)
+        if let Some(ref obj) = chunk.object
+            && obj != "chat.completion.chunk"
+        {
+            debug!("Skipping non-chunk SSE object: {obj}");
+            continue;
+        }
 
         // Capture response id from first chunk
         if response_id.is_none() {
@@ -250,7 +260,8 @@ async fn process_chat_completions_sse(
         // Process choices
         if let Some(choices) = &chunk.choices {
             for choice in choices.iter() {
-                let choice_acc = acc.choices.entry(0).or_default();
+                let choice_idx = choice.index.unwrap_or(0);
+                let choice_acc = acc.choices.entry(choice_idx).or_default();
 
                 if let Some(delta) = &choice.delta {
                     // 1. Reasoning content (DeepSeek / o1-style)
@@ -281,7 +292,9 @@ async fn process_chat_completions_sse(
                             }
                             if let Some(ref func) = tc.function {
                                 if let Some(ref name) = func.name {
-                                    tc_acc.name.push_str(name);
+                                    if tc_acc.name.is_empty() {
+                                        tc_acc.name = name.clone();
+                                    }
                                 }
                                 if let Some(ref args) = func.arguments {
                                     tc_acc.arguments.push_str(args);
@@ -320,19 +333,25 @@ async fn process_chat_completions_sse(
                 // 4. Finish reason handling
                 if let Some(ref reason) = choice.finish_reason
                     && !reason.is_empty()
-                    && reason != "null"
                 {
                     match reason.as_str() {
                         "stop" | "length" => {
                             emit_accumulated_text(choice_acc, &tx_event).await;
                         }
-                        "tool_calls" => {
+                        "tool_calls" | "function_call" => {
                             emit_tool_call_output_items(choice_acc, &tx_event).await;
                         }
                         "content_filter" => {
-                            emit_accumulated_text(choice_acc, &tx_event).await;
+                            let _ = tx_event
+                                .send(Err(ApiError::CyberPolicy {
+                                    message: "content filter".to_string(),
+                                }))
+                                .await;
+                            return;
                         }
-                        _ => {}
+                        other => {
+                            debug!("Unknown chat completions finish_reason: {other}");
+                        }
                     }
                 }
             }
@@ -346,7 +365,7 @@ async fn process_chat_completions_sse(
                 cached_input_tokens: 0,
                 output_tokens: usage.completion_tokens.unwrap_or(0),
                 reasoning_output_tokens: 0,
-                total_tokens: usage.total_tokens,
+                total_tokens: usage.total_tokens.unwrap_or(0),
             };
             let resp_id = response_id.clone().unwrap_or_default();
             if tx_event
@@ -445,6 +464,10 @@ fn categorize_chat_error(code: Option<&str>, message: &str) -> ApiError {
             message: message.to_string(),
             delay: None,
         },
+        Some("content_filter") => ApiError::CyberPolicy {
+            message: message.to_string(),
+        },
+        Some("token_limit_exceeded") => ApiError::ContextWindowExceeded,
         _ => ApiError::Stream(message.to_string()),
     }
 }

@@ -34,8 +34,10 @@ use std::sync::atomic::Ordering;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::ChatCompletionContent;
+use codex_api::ChatCompletionContentPart;
 use codex_api::ChatCompletionFunctionCall;
 use codex_api::ChatCompletionFunctionDef;
+use codex_api::ChatCompletionImageUrl;
 use codex_api::ChatCompletionMessage;
 use codex_api::ChatCompletionRole;
 use codex_api::ChatCompletionStreamOptions;
@@ -87,6 +89,7 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -1922,18 +1925,46 @@ fn input_items_to_chat_messages(items: &[ResponseItem]) -> Vec<ChatCompletionMes
                     "assistant" => ChatCompletionRole::Assistant,
                     _ => continue,
                 };
-                let text = content.iter().fold(String::new(), |mut acc, c| {
+                let mut parts: Vec<ChatCompletionContentPart> = Vec::new();
+                let mut text_buf = String::new();
+                for c in content {
                     match c {
                         ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                            acc.push_str(text);
+                            text_buf.push_str(text);
+                        }
+                        ContentItem::InputImage { image_url, detail } => {
+                            // Flush accumulated text before the image
+                            if !text_buf.is_empty() {
+                                parts.push(ChatCompletionContentPart::Text {
+                                    text: std::mem::take(&mut text_buf),
+                                });
+                            }
+                            parts.push(ChatCompletionContentPart::ImageUrl {
+                                image_url: ChatCompletionImageUrl {
+                                    url: image_url.clone(),
+                                    detail: detail.map(|d| match d {
+                                        ImageDetail::High => "high",
+                                        ImageDetail::Original => "original",
+                                    }.to_string()),
+                                },
+                            });
                         }
                         _ => {}
                     }
-                    acc
-                });
+                }
+                let content_value = if parts.is_empty() {
+                    ChatCompletionContent::Text(text_buf)
+                } else {
+                    if !text_buf.is_empty() {
+                        parts.push(ChatCompletionContentPart::Text {
+                            text: text_buf,
+                        });
+                    }
+                    ChatCompletionContent::MultiPart(parts)
+                };
                 messages.push(ChatCompletionMessage {
                     role: chat_role,
-                    content: Some(ChatCompletionContent::Text(text)),
+                    content: Some(content_value),
                     tool_calls: None,
                     tool_call_id: None,
                 });
